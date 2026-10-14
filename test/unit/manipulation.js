@@ -2610,7 +2610,7 @@ QUnit.test( "Sanitized HTML doesn't get unsanitized", function( assert ) {
 
 	var container,
 		counter = 0,
-		assertCount = 12,
+		assertCount = 13,
 		pending = assertCount,
 		done = assert.async();
 
@@ -2657,4 +2657,66 @@ QUnit.test( "Sanitized HTML doesn't get unsanitized", function( assert ) {
 	test( "<foo\" alt=\"\" title=\"/><img src=url404 onerror=xss(9)>\">" );
 	test( "<img alt=\"<x\" title=\"\" src=\"/><img src=url404 onerror=xss(10)>\">" );
 	test( "<noscript/><img src=url404 onerror=xss(11)>" );
+	test( "<option><style></option></select><img src=url404 onerror=xss(12)></style>" );
+} );
+
+QUnit.test( "<option> and <optgroup> markup is not reparsed inside a <select> (gh-4647)", function( assert ) {
+
+	var div = document.createElement( "div" );
+
+	function nativeParse( html ) {
+		var container = document.createElement( "div" );
+		container.innerHTML = html;
+		return container;
+	}
+
+	function nodeNames( nodes ) {
+		return jQuery.map( nodes, function( node ) {
+			return node.nodeName.toLowerCase();
+		} ).join( " " );
+	}
+
+	// Support: IE <=9 only
+	// IE <=9 replaces <option> tags with their contents when inserted outside of
+	// the select element, so the <select> wrapper is still needed there.
+	div.innerHTML = "<option></option>";
+	if ( !div.lastChild ) {
+		assert.expect( 1 );
+		assert.ok( true, "<option> markup can't be parsed outside of a <select> here" );
+		return;
+	}
+
+	assert.expect( 10 );
+
+	jQuery.each( [ "option", "optgroup" ], function( i, tag ) {
+
+		// Markup a sanitizer parsed in a regular container must produce the same
+		// nodes in jQuery; reparsing it inside a <select> would close the wrapper
+		// and change the structure.
+		var structure = "<" + tag + "></" + tag + "><select></select>",
+
+			// Inert in a regular container (the <img> is <style> text), but it
+			// breaks out as a live element when reparsed inside a <select>.
+			payload = "<" + tag + "><style></" + tag + "></select>" +
+				"<img src=url404 class='gh-4647'></style>";
+
+		assert.equal( nodeNames( jQuery.parseHTML( structure ) ),
+			nodeNames( nativeParse( structure ).childNodes ),
+			"jQuery.parseHTML: " + tag + " markup parsed like in a regular container" );
+
+		assert.equal( jQuery( "<div></div>" ).append( structure ).html(),
+			nativeParse( structure ).innerHTML,
+			".append(): " + tag + " markup parsed like in a regular container" );
+
+		assert.equal( jQuery( "<div></div>" ).html( structure ).html(),
+			nativeParse( structure ).innerHTML,
+			".html(): " + tag + " markup parsed like in a regular container" );
+
+		assert.equal( jQuery( "<div></div>" ).html( payload ).html(),
+			nativeParse( payload ).innerHTML,
+			".html(): sanitized " + tag + " payload kept as is" );
+
+		assert.equal( jQuery( "<div></div>" ).append( payload ).find( "img" ).length, 0,
+			".append(): no element breaks out of the sanitized " + tag + " payload" );
+	} );
 } );
