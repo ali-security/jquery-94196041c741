@@ -1,6 +1,88 @@
 language: node_js
 sudo: false
-node_js:
-- "0.12"
-- "4"
-- "5"
+# Travis' default node_js npm cache restores node_modules from earlier builds,
+# defeating the time-machine pin below (stale modern deps, and the npm@2.1.12
+# devDependency shadowing the leg's own npm). Always install from scratch.
+cache: false
+before_install:
+# Resolve devDependencies as of the 1.12.2 release. 2016-03-22T22:00Z rather
+# than the 2016-03-17 release date: babel-core 5 needs left-pad@0.0.3 (via
+# line-numbers@0.2.0), whose registry timestamp is its 2016-03-22T21:51Z
+# republish after the left-pad unpublish.
+# The date is an auth token scoped to the time-machine host (npm 2.x ignores a
+# credential embedded in the registry URL); always-auth makes npm 2/3 send it.
+# It lands in the user npmrc (~/.npmrc), shared by every nvm-installed Node.
+# always-auth is appended to the file directly: on the browser leg this runs
+# under Node 22's npm 10, whose `npm config set` rejects the retired option
+# (an npmrc entry only draws a warning). The installs that pass
+# --registry=https://registry.npmjs.org/ run on npm 10, which ignores
+# always-auth and sends the host-scoped token nowhere else.
+- npm config set registry https://time-machines-npm.sealsecurity.io/
+- npm config set //time-machines-npm.sealsecurity.io/:_authToken 2016-03-22T22:00:00.000Z
+- echo "always-auth=true" >> "$(npm config get userconfig)"
+- cat "$(npm config get userconfig)"
+# All legs are listed explicitly: jobs.include replaces the root node_js matrix.
+# The three Node legs run the upstream default script (`npm test`).
+jobs:
+  include:
+  # Node 0.12: jsdom 5 (devDependency) needs io.js, so Gruntfile.js would skip
+  # the node smoke tests. Do what upstream's `grunt old_jsdom` task does
+  # (npm install jsdom@3) so they run; its native contextify dependency is
+  # compiled for this Node with a current node-gyp, as node-gyp 3 (bundled
+  # with npm 2) needs Python 2, which the build image no longer has.
+  - name: "node 0.12"
+    node_js: "0.12"
+    before_script:
+    - npm install jsdom@3 --ignore-scripts
+    - export SEAL_NODE_TARGET="$(node -p 'process.versions.node')"
+    - nvm install 22
+    - nvm use 0.12
+    - >-
+      (cd node_modules/jsdom/node_modules/contextify &&
+      nvm exec 22 npx --yes --registry=https://registry.npmjs.org/ node-gyp@11.5.0
+      rebuild --target="$SEAL_NODE_TARGET" --dist-url=https://nodejs.org/dist)
+    - node -v
+    # Gruntfile.js silently skips the smoke tests if jsdom fails to load.
+    - >-
+      node -e 'require("jsdom").env("", function(errors, window) {
+      if (errors || !window.document) { process.exit(1); }
+      console.log("jsdom " + require("jsdom/package.json").version + " OK"); })'
+  - name: "node 4"
+    node_js: "4"
+  - name: "node 5"
+    node_js: "5"
+  # Real browser QUnit suite (test/index.html) in headless Chrome, served by
+  # PHP (ajax tests hit test/data/*.php). dist/ is rebuilt from src/ under
+  # Node 5 and loaded unminified (?dev). Each module runs in its own page,
+  # like upstream's TestSwarm job (see test/seal-browser-runner.js).
+  - name: "browser QUnit (headless Chrome)"
+    node_js: "22"
+    addons:
+      chrome: stable
+      apt:
+        packages:
+        - php-cli
+    install:
+    - nvm install 5
+    - npm install
+    - ./node_modules/.bin/grunt
+    - nvm use 22
+    # Test driver lives outside the tree, from the public registry.
+    - >-
+      (mkdir -p /tmp/driver && cd /tmp/driver && npm init -y &&
+      npm install --registry=https://registry.npmjs.org/ puppeteer-core@24.43.1)
+    before_script:
+    - google-chrome --version
+    - /usr/bin/php -v
+    - PHP_CLI_SERVER_WORKERS=10 /usr/bin/php -S 127.0.0.1:8000 -t . > /tmp/php-server.log 2>&1 &
+    - sleep 3
+    - curl -sSf -o /dev/null http://127.0.0.1:8000/test/index.html
+    - test "$(curl -sSf -d seal=ok http://127.0.0.1:8000/test/data/echoData.php)" = "seal=ok"
+    script:
+    # "ajax: #14379": sync XHR in an unload handler is disallowed by modern
+    # Chrome (environmental, not a jQuery behavior).
+    - >-
+      CHROME_PATH="$(command -v google-chrome)"
+      NODE_PATH=/tmp/driver/node_modules
+      SEAL_SKIP_TESTS="ajax: #14379 - jQuery.ajax() on unload"
+      node test/seal-browser-runner.js "http://127.0.0.1:8000/test/index.html?dev"

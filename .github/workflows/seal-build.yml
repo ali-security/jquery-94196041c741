@@ -1,0 +1,90 @@
+# Seal build-and-pack workflow for jquery 1.12.x (no tests here; the test
+# legs run on Travis via .travis.yml).
+#
+# The npm tarball is NOT `npm pack` of this repo: jQuery 1.12.x publishes the
+# separate jquery-dist repo, assembled by build/release/dist.js. This job
+# rebuilds dist/ with the publisher's toolchain (Node 5.8.0 / npm 3.7.3, deps
+# pinned through the registry time machine), overlays it on jquery-dist at the
+# parent of its "Release 1.12.2" commit and packs that.
+name: seal-build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 5.8.0
+
+      - name: Pin npm registry to the release-date time machine
+        # 2016-03-22T22:00Z rather than the 2016-03-17 release date: babel-core 5
+        # needs left-pad@0.0.3 (via line-numbers@0.2.0), whose registry timestamp
+        # is its 2016-03-22T21:51Z republish after the left-pad unpublish.
+        run: |
+          npm config set registry https://:2016-03-22T22%3A00%3A00.000Z@time-machines-npm.sealsecurity.io/
+          node -v
+          npm -v
+
+      - name: Install build dependencies
+        run: npm install
+
+      - name: Pin the @DATE stamp to the 1.12.2 release build date
+        run: |
+          sed -i 's|( new Date() )\.toISOString()\.replace( /:\\d+\\\.\\d+Z\$/, "Z" )|"2016-03-17T17:44Z"|' build/tasks/build.js
+          grep -q '"2016-03-17T17:44Z"' build/tasks/build.js
+
+      - name: Build dist (build + lint + uglify + dist)
+        run: |
+          unset COMMIT
+          ./node_modules/.bin/grunt dev
+
+      - name: Check rebuilt dist against the tracked release dist
+        # With an unmodified src/ (fingerprint of upstream 1.12.2's src/), the
+        # rebuilt dist must be byte-identical to the tracked release dist; this
+        # catches toolchain drift. With a patched src/ the dist legitimately
+        # differs, so only the diffstat is shown.
+        run: |
+          git diff --stat -- dist/
+          SRC_FP=$(find src -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+          echo "src fingerprint: $SRC_FP"
+          if [ "$SRC_FP" = "f4808cb2386678e5a0bc8fa226d0856d1bc337ef804485bef5a5337983cd8fa8" ]; then
+            git diff --exit-code -- dist/
+          else
+            echo "src/ differs from upstream 1.12.2; skipping byte-parity check of dist/"
+          fi
+
+      - name: Assemble jquery-dist layout and pack
+        run: |
+          STAGE="$RUNNER_TEMP/stage"
+          OUT="$RUNNER_TEMP/out"
+          rm -rf "$STAGE" "$OUT"
+          mkdir -p "$OUT"
+          git clone https://github.com/jquery/jquery-dist.git "$STAGE"
+          # = tag 2.2.1, parent of jquery-dist's "Release 1.12.2" commit
+          git -C "$STAGE" checkout 788eaba2f83e7b7445c7a83a50c81c0704423874
+          cp -f dist/jquery.js dist/jquery.min.js dist/jquery.min.map "$STAGE/dist/"
+          cp -rf src external/sizzle LICENSE.txt AUTHORS.txt package.json "$STAGE/"
+          node -e 'var fs=require("fs"),stage=process.argv[1],pkg=require(stage+"/package.json");fs.writeFileSync(stage+"/bower.json",JSON.stringify({name:pkg.name,main:pkg.main,license:"MIT",ignore:["package.json"],keywords:pkg.keywords},null,2));' "$STAGE"
+          rm -rf "$STAGE/.git"
+          cd "$STAGE"
+          TGZ=$(npm pack | tail -n 1)
+          test -f "$TGZ"
+          cp "$TGZ" "$OUT/"
+          echo "SEAL_TGZ=$OUT/$TGZ" >> "$GITHUB_ENV"
+          ls -la "$OUT"
+          tar -tzf "$OUT/$TGZ" | sort
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jquery-npm-tarball
+          path: ${{ env.SEAL_TGZ }}
+          if-no-files-found: error
