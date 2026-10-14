@@ -1336,7 +1336,7 @@ QUnit.test( "Empty replaceWith (trac-13401; trac-13596; gh-2204)", function( ass
 
 	assert.expect( 25 );
 
-	var $el = jQuery( "<div/><div/>" ).html( "<p>0</p>" ),
+	var $el = jQuery( "<div></div><div></div>" ).html( "<p>0</p>" ),
 		expectedHTML = $el.html(),
 		tests = {
 			"empty string": "",
@@ -1673,7 +1673,7 @@ function testHtml( valueObj, assert ) {
 		div = jQuery( "<div></div>" ),
 		fixture = jQuery( "#qunit-fixture" );
 
-	div.html( valueObj( "<div id='parent_1'><div id='child_1'/></div><div id='parent_2'/>" ) );
+	div.html( valueObj( "<div id='parent_1'><div id='child_1'></div></div><div id='parent_2'></div>" ) );
 	assert.equal( div.children().length, 2, "Found children" );
 	assert.equal( div.children().children().length, 1, "Found grandchild" );
 
@@ -2337,7 +2337,7 @@ QUnit.test( "Guard against exceptions when clearing safeChildNodes", function( a
 	var div;
 
 	try {
-		div = jQuery( "<div/><hr/><code/><b/>" );
+		div = jQuery( "<div></div><hr/><code></code><b></b>" );
 	} catch ( e ) {}
 
 	assert.ok( div && div.jquery, "Created nodes safely, guarded against exceptions on safeChildNodes[ -1 ]" );
@@ -2470,7 +2470,7 @@ QUnit.test( "jQuery._evalUrl (#12838)", function( assert ) {
 		assert.equal( ( input.url || input ).slice( -1 ), expectedArgument, message );
 		expectedArgument++;
 	};
-	jQuery( "#qunit-fixture" ).append( "<script src='1'/><script src='2'/>" );
+	jQuery( "#qunit-fixture" ).append( "<script src='1'></script><script src='2'></script>" );
 	assert.equal( expectedArgument, 3, "synchronous execution" );
 
 	message = "custom implementation";
@@ -2479,7 +2479,7 @@ QUnit.test( "jQuery._evalUrl (#12838)", function( assert ) {
 	jQuery.ajax = function( options ) {
 		assert.strictEqual( options, {}, "Unexpected call to jQuery.ajax" );
 	};
-	jQuery( "#qunit-fixture" ).append( "<script src='3'/><script src='4'/>" );
+	jQuery( "#qunit-fixture" ).append( "<script src='3'></script><script src='4'></script>" );
 
 	jQuery.ajax = ajax;
 	jQuery._evalUrl = evalUrl;
@@ -2509,7 +2509,7 @@ QUnit.test( "jQuery.htmlPrefilter (gh-1747)", function( assert ) {
 	expectedArgument = "A-" + poison + "B-" + poison + poison + "C-";
 	fixture.html( expectedArgument );
 
-	expectedArgument = "D-" + poison + "E-" + "<del/><div>" + poison + poison + "</div>" + "F-";
+	expectedArgument = "D-" + poison + "E-" + "<del></del><div>" + poison + poison + "</div>" + "F-";
 	fixture.append( expectedArgument );
 
 	expectedArgument = poison;
@@ -2564,7 +2564,7 @@ QUnit.test( "Index for function argument should be received (#13094)", function(
 
 	var i = 0;
 
-	jQuery( "<div/><div/>" ).before( function( index ) {
+	jQuery( "<div></div><div></div>" ).before( function( index ) {
 		assert.equal( index, i++, "Index should be correct" );
 	} );
 
@@ -2604,4 +2604,57 @@ QUnit.asyncTest( "Insert script with data-URI (gh-1887)", 1, function( assert ) 
 
 		QUnit.start();
 	}, 100 );
+} );
+
+QUnit.test( "Sanitized HTML doesn't get unsanitized", function( assert ) {
+
+	var container,
+		counter = 0,
+		assertCount = 12,
+		pending = assertCount,
+		done = assert.async();
+
+	assert.expect( assertCount );
+
+	Globals.register( "xss" );
+	window.xss = sinon.spy();
+
+	container = jQuery( "<div></div>" );
+	container.appendTo( "#qunit-fixture" );
+
+	function test( htmlString ) {
+		var currCounter = counter,
+			div = jQuery( "<div></div>" );
+
+		counter++;
+
+		div.appendTo( container );
+		div.html( htmlString );
+
+		setTimeout( function() {
+			assert.ok( window.xss.withArgs( currCounter ).notCalled,
+				"Insecure code wasn't executed, input: " + htmlString );
+
+			pending--;
+			if ( !pending ) {
+				done();
+			}
+		}, 1000 );
+	}
+
+	// Note: below test cases need to invoke the xss function with consecutive
+	// decimal parameters for the assertion messages to be correct.
+	// Thanks to Masato Kinugawa from Cure53 for providing the following test cases.
+	test( "<img alt=\"<x\" title=\"/><img src=url404 onerror=xss(0)>\">" );
+	test( "<img alt=\"\n<x\" title=\"/>\n<img src=url404 onerror=xss(1)>\">" );
+	test( "<style><style/><img src=url404 onerror=xss(2)>" );
+	test( "<xmp><xmp/><img src=url404 onerror=xss(3)>" );
+	test( "<title><title /><img src=url404 onerror=xss(4)>" );
+	test( "<iframe><iframe/><img src=url404 onerror=xss(5)>" );
+	test( "<noframes><noframes/><img src=url404 onerror=xss(6)>" );
+	test( "<noembed><noembed/><img src=url404 onerror=xss(7)>" );
+	test( "<noscript><noscript/><img src=url404 onerror=xss(8)>" );
+	test( "<foo\" alt=\"\" title=\"/><img src=url404 onerror=xss(9)>\">" );
+	test( "<img alt=\"<x\" title=\"\" src=\"/><img src=url404 onerror=xss(10)>\">" );
+	test( "<noscript/><img src=url404 onerror=xss(11)>" );
 } );
